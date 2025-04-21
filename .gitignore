@@ -1,0 +1,37 @@
+# AWS credentials
+app/src/main/assets/aws_credentials.properties
+
+# Gradle files
+.gradle/
+build/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Android Studio generated files and folders
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+output.json
+
+# IntelliJ
+*.iml
+.idea/
+misc.xml
+deploymentTargetDropDown.xml
+render.experimental.xml
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (e.g. APIs or Firebase)
+google-services.json
+
+# Android Profiling
+*.hprof
+
+# Большие файлы датасетов
+app/src/main/assets/archive/lfw-dataset (1).zip
+app/src/main/assets/archive/lfw-deepfunneled.zip
