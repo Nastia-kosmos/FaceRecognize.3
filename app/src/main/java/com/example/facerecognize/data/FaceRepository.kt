@@ -14,6 +14,18 @@ class FaceRepository(private val faceDao: FaceDao) {
         return faceDao.getFaceById(faceId)
     }
 
+    suspend fun faceExistsByPath(imagePath: String): Int {
+        return faceDao.faceExistsByPath(imagePath)
+    }
+
+    suspend fun clearDatabase() {
+        faceDao.deleteAllFaces()
+    }
+
+    suspend fun getAllFacesSnapshot(): List<FaceEntity> {
+        return faceDao.getAllFacesForComparison()
+    }
+
     suspend fun findSimilarFacesWithScores(targetFace: FaceEntity, limit: Int = 5): List<Pair<FaceEntity, Double>> {
         val allFaces = faceDao.getAllFacesForComparison()
         return allFaces

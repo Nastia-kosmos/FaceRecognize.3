@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -37,11 +39,65 @@ import com.example.facerecognize.service.ImageLibraryLoader
 import com.example.facerecognize.service.AWSRekognitionService
 import com.example.facerecognize.ui.theme.FaceRecognizeTheme
 import com.example.facerecognize.utils.AWSCredentialsManager
+import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.io.File
+import android.content.Context
+import java.util.UUID
+
+// Перемещаем функцию вне классов, чтобы она была доступна всем классам в файле
+private fun saveImageToStorage(context: Context, uri: Uri, fileName: String): String? {
+    try {
+        // Создаем директорию для хранения фотографий
+        val directory = File(context.filesDir, "user_photos")
+        if (!directory.exists()) {
+            directory.mkdirs()
+        }
+        
+        // Создаем файл для сохранения
+        val file = File(directory, fileName)
+        
+        // Копируем содержимое из Uri в файл
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            file.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        
+        return file.absolutePath
+    } catch (e: Exception) {
+        Log.e("ImageSave", "Ошибка при сохранении изображения: ${e.message}")
+        return null
+    }
+}
+
+// Функция для загрузки изображений в Firebase Storage
+suspend fun uploadImageToFirebase(context: Context, uri: Uri, fileName: String): String? {
+    return try {
+        val storage = FirebaseStorage.getInstance()
+        val storageRef = storage.reference
+        val imagesRef = storageRef.child("faces/$fileName")
+        
+        // Загрузка файла
+        context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            val uploadTask = imagesRef.putStream(inputStream)
+            uploadTask.await()
+            
+            // Получаем URL загруженного файла
+            val downloadUrl = imagesRef.downloadUrl.await()
+            Log.d("FirebaseStorage", "Изображение успешно загружено: $downloadUrl")
+            downloadUrl.toString()
+        }
+    } catch (e: Exception) {
+        Log.e("FirebaseStorage", "Ошибка при загрузке изображения: ${e.message}", e)
+        null
+    }
+}
 
 class MainActivity : ComponentActivity() {
     private val faceRecognitionService = FaceRecognitionService()
@@ -132,11 +188,84 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+fun PersonInfoForm(
+    name: String,
+    age: String,
+    onNameChange: (String) -> Unit,
+    onAgeChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Информация о человеке",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+            
+            OutlinedTextField(
+                value = name,
+                onValueChange = onNameChange,
+                label = { Text("Имя") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                singleLine = true
+            )
+            
+            OutlinedTextField(
+                value = age,
+                onValueChange = onAgeChange,
+                label = { Text("Возраст") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                singleLine = true
+            )
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Отмена")
+                }
+                
+                Spacer(modifier = Modifier.width(8.dp))
+                
+                Button(
+                    onClick = onSubmit,
+                    modifier = Modifier.weight(1f),
+                    enabled = name.isNotBlank()
+                ) {
+                    Text("Готово")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun FaceRecognitionScreen(
     viewModel: FaceRecognitionViewModel,
     onSelectImage: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
@@ -153,66 +282,127 @@ fun FaceRecognitionScreen(
             )
         }
 
-        Button(
-            onClick = onSelectImage,
-            modifier = Modifier.padding(vertical = 16.dp),
-            enabled = !uiState.isLoadingLibrary
-        ) {
-            Text("Выбрать изображение")
-        }
-
-        uiState.selectedImage?.let { uri ->
-            Image(
-                painter = rememberAsyncImagePainter(uri),
-                contentDescription = "Выбранное изображение",
+        // Кнопки управления (показываем только если не отображается форма)
+        if (!uiState.showInfoForm) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp)
-            )
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Показываем результаты AWS анализа
-            uiState.awsAnalysisResult?.let { result ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Button(
+                    onClick = onSelectImage,
+                    modifier = Modifier.weight(1f),
+                    enabled = !uiState.isLoadingLibrary
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        Text(
-                            text = "Результаты анализа AWS Rekognition:",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = result,
-                            style = MaterialTheme.typography.bodyMedium
-    )
-}
+                    Text("Выбрать изображение")
+                }
+                
+                Spacer(modifier = Modifier.width(8.dp))
+                
+                Button(
+                    onClick = { viewModel.resetDatabaseAndReloadLibrary("archive") },
+                    modifier = Modifier.weight(1f),
+                    enabled = !uiState.isLoadingLibrary,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Text("Обновить библиотеку")
                 }
             }
-            
-            // Показываем похожие лица
-            if (uiState.similarFaces.isNotEmpty()) {
-                Text(
-                    text = "Похожие лица:",
-                    style = MaterialTheme.typography.titleMedium,
+        }
+
+        // Показываем форму для ввода информации, если нужно
+        if (uiState.showInfoForm) {
+            uiState.selectedImage?.let { uri ->
+                Image(
+                    painter = rememberAsyncImagePainter(uri),
+                    contentDescription = "Выбранное изображение",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 8.dp)
+                        .height(200.dp)
                 )
                 
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(uiState.similarFaces) { (face, similarity) ->
-                        SimilarFaceCard(face = face, similarity = similarity)
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                PersonInfoForm(
+                    name = uiState.tempPersonName,
+                    age = uiState.tempPersonAge,
+                    onNameChange = { viewModel.setTempPersonName(it) },
+                    onAgeChange = { 
+                        // Проверяем, что ввод - число
+                        if (it.isEmpty() || it.all { char -> char.isDigit() }) {
+                            viewModel.setTempPersonAge(it)
+                        }
+                    },
+                    onSubmit = { 
+                        (context as? ComponentActivity)?.let { activity ->
+                            viewModel.processSelectedImage(
+                                activity, 
+                                uiState.tempPersonName, 
+                                uiState.tempPersonAge
+                            )
+                        }
+                    },
+                    onCancel = { viewModel.cancelInfoForm() }
+                )
+            }
+        } else {
+            // Отображаем результаты только если не показывается форма
+            uiState.selectedImage?.let { uri ->
+                Image(
+                    painter = rememberAsyncImagePainter(uri),
+                    contentDescription = "Выбранное изображение",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Показываем результаты AWS анализа
+                uiState.awsAnalysisResult?.let { result ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        ) {
+                            Text(
+                                text = "Результаты анализа AWS Rekognition:",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = result,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+                
+                // Показываем похожие лица
+                if (uiState.similarFaces.isNotEmpty()) {
+                    Text(
+                        text = "Похожие лица:",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                    
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(uiState.similarFaces) { (face, similarity) ->
+                            SimilarFaceCard(face = face, similarity = similarity)
+                        }
                     }
                 }
             }
@@ -243,12 +433,30 @@ fun SimilarFaceCard(face: FaceEntity, similarity: Double) {
             modifier = Modifier.padding(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Image(
-                painter = rememberAsyncImagePainter(
-                    model = ImageRequest.Builder(LocalContext.current)
+            // Загружаем изображение в зависимости от источника
+            val imageModel = when {
+                // Изображение из assets
+                face.imagePath.startsWith("archive/") -> {
+                    ImageRequest.Builder(LocalContext.current)
                         .data("file:///android_asset/${face.imagePath}")
                         .build()
-                ),
+                }
+                // Изображение из Firebase Storage (URL)
+                face.imagePath.startsWith("http") -> {
+                    ImageRequest.Builder(LocalContext.current)
+                        .data(face.imagePath)
+                        .build()
+                }
+                // Локальное изображение
+                else -> {
+                    ImageRequest.Builder(LocalContext.current)
+                        .data(File(face.imagePath))
+                        .build()
+                }
+            }
+            
+            Image(
+                painter = rememberAsyncImagePainter(imageModel),
                 contentDescription = "Похожее лицо",
                 modifier = Modifier
                     .size(120.dp)
@@ -263,6 +471,14 @@ fun SimilarFaceCard(face: FaceEntity, similarity: Double) {
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
+            
+            if (face.age.isNotEmpty()) {
+                Text(
+                    text = "${face.age} лет",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             
             Text(
                 text = "Сходство: ${(similarity * 100).toInt()}%",
@@ -281,6 +497,46 @@ class FaceRecognitionViewModel(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(FaceRecognitionUiState())
     val uiState: StateFlow<FaceRecognitionUiState> = _uiState.asStateFlow()
+
+    fun resetDatabaseAndReloadLibrary(libraryPath: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isLoadingLibrary = true,
+                error = null
+            )
+
+            try {
+                // Сначала получаем все лица из базы данных
+                val allFaces = repository.getAllFacesSnapshot()
+                
+                // Фильтруем, оставляя только те, что не из папки assets (пользовательские фото)
+                val userFaces = allFaces.filter { !it.imagePath.startsWith("archive/") }
+                
+                // Очищаем базу данных
+                repository.clearDatabase()
+                Log.d("FaceRecognition", "База данных очищена")
+                
+                // Перезагружаем библиотеку
+                imageLibraryLoader.loadImagesFromLibrary(libraryPath)
+                Log.d("FaceRecognition", "Библиотека перезагружена")
+                
+                // Восстанавливаем пользовательские фотографии в базе
+                userFaces.forEach { face ->
+                    repository.insertFace(face)
+                }
+                Log.d("FaceRecognition", "Восстановлено ${userFaces.size} пользовательских фотографий")
+                
+                _uiState.value = _uiState.value.copy(
+                    isLoadingLibrary = false
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingLibrary = false,
+                    error = "Ошибка сброса базы данных: ${e.message}"
+                )
+            }
+        }
+    }
 
     fun loadImageLibrary(libraryPath: String) {
         viewModelScope.launch {
@@ -304,10 +560,22 @@ class FaceRecognitionViewModel(
     }
 
     fun onImageSelected(uri: Uri, context: ComponentActivity) {
+        _uiState.value = _uiState.value.copy(
+            selectedImage = uri,
+            showInfoForm = true,
+            tempPersonName = "",
+            tempPersonAge = "",
+            error = null
+        )
+    }
+
+    fun processSelectedImage(context: ComponentActivity, name: String, age: String) {
         viewModelScope.launch {
+            val uri = _uiState.value.selectedImage ?: return@launch
+            
             _uiState.value = _uiState.value.copy(
-                selectedImage = uri,
                 isProcessing = true,
+                showInfoForm = false,
                 error = null
             )
 
@@ -316,6 +584,32 @@ class FaceRecognitionViewModel(
                     context.contentResolver,
                     uri
                 )
+                
+                // Создаем уникальное имя файла с UUID
+                val uuid = UUID.randomUUID().toString()
+                val fileName = "face_${name.replace(" ", "_")}_${uuid}.jpg"
+                
+                // Загружаем изображение в Firebase Storage
+                val firebaseImageUrl = uploadImageToFirebase(context, uri, fileName)
+                
+                // Определяем путь к изображению (Firebase URL или локальный путь)
+                val imagePath = if (firebaseImageUrl != null) {
+                    // Успешно загружено в Firebase
+                    firebaseImageUrl
+                } else {
+                    // Если загрузка в Firebase не удалась, сохраняем локально
+                    Log.w("FaceRecognition", "Не удалось загрузить в Firebase, используем локальное хранилище")
+                    val savedImagePath = saveImageToStorage(context, uri, fileName)
+                    
+                    if (savedImagePath == null) {
+                        _uiState.value = _uiState.value.copy(
+                            isProcessing = false,
+                            error = "Не удалось сохранить изображение"
+                        )
+                        return@launch
+                    }
+                    savedImagePath
+                }
                 
                 // Используем AWS Rekognition для определения лиц и знаменитостей
                 val awsFaces = awsRekognitionService.detectFaces(bitmap)
@@ -341,17 +635,31 @@ class FaceRecognitionViewModel(
                         "\n\nЗнаменитости не обнаружены"
                     }
                     
-                    val awsInfo = "$confidenceMessage\n$ageMessage\n$emotionMessage$celebrityInfo"
+                    val storageInfo = if (firebaseImageUrl != null) {
+                        "\n\nИзображение сохранено в Firebase"
+                    } else {
+                        "\n\nИзображение сохранено локально"
+                    }
+                    
+                    val userInfo = "\n\nИмя: $name" + 
+                        (if (age.isNotEmpty()) "\nВозраст: $age лет" else "") +
+                        storageInfo
+                    
+                    val awsInfo = "$confidenceMessage\n$ageMessage\n$emotionMessage$celebrityInfo$userInfo"
 
                     // Находим похожие лица в базе данных
                     val faces = faceRecognitionService.detectFaces(bitmap)
                     if (faces.isNotEmpty()) {
                         val face = faces.first()
                         val faceEntity = FaceEntity(
-                            name = "Новое лицо",
-                            imagePath = uri.toString(),
-                            faceEmbedding = face.embedding
+                            name = name,
+                            imagePath = imagePath,  // Используем путь к сохраненному файлу (Firebase URL или локальный)
+                            faceEmbedding = face.embedding,
+                            age = age
                         )
+                        
+                        // Сохраняем в базу данных
+                        repository.insertFace(faceEntity)
                         
                         val similarFacesWithScores = repository.findSimilarFacesWithScores(faceEntity)
                         
@@ -402,6 +710,25 @@ class FaceRecognitionViewModel(
             }
         }
     }
+
+    fun setTempPersonName(name: String) {
+        _uiState.value = _uiState.value.copy(
+            tempPersonName = name
+        )
+    }
+
+    fun setTempPersonAge(age: String) {
+        _uiState.value = _uiState.value.copy(
+            tempPersonAge = age
+        )
+    }
+
+    fun cancelInfoForm() {
+        _uiState.value = _uiState.value.copy(
+            showInfoForm = false,
+            selectedImage = null
+        )
+    }
 }
 
 data class FaceRecognitionUiState(
@@ -410,5 +737,8 @@ data class FaceRecognitionUiState(
     val isLoadingLibrary: Boolean = false,
     val similarFaces: List<Pair<FaceEntity, Double>> = emptyList(),
     val error: String? = null,
-    val awsAnalysisResult: String? = null
+    val awsAnalysisResult: String? = null,
+    val showInfoForm: Boolean = false,
+    val tempPersonName: String = "",
+    val tempPersonAge: String = ""
 )

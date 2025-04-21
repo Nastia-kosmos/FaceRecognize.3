@@ -28,19 +28,27 @@ class ImageLibraryLoader(
                         fileName.lowercase().endsWith(".jpeg") || 
                         fileName.lowercase().endsWith(".png")) {
                         
-                        // Открываем файл из assets
-                        context.assets.open("archive/$fileName").use { inputStream ->
-                            val bitmap = BitmapFactory.decodeStream(inputStream)
-                            val faces = faceRecognitionService.detectFaces(bitmap)
-                            
-                            faces.forEach { face ->
-                                val faceEntity = FaceEntity(
-                                    name = fileName.substringBeforeLast("."),
-                                    imagePath = "archive/$fileName",
-                                    faceEmbedding = face.embedding
-                                )
-                                repository.insertFace(faceEntity)
+                        val imagePath = "archive/$fileName"
+                        
+                        // Проверяем, существует ли уже это изображение в базе
+                        if (repository.faceExistsByPath(imagePath) == 0) {
+                            // Открываем файл из assets только если его еще нет в базе
+                            context.assets.open(imagePath).use { inputStream ->
+                                val bitmap = BitmapFactory.decodeStream(inputStream)
+                                val faces = faceRecognitionService.detectFaces(bitmap)
+                                
+                                faces.forEach { face ->
+                                    val faceEntity = FaceEntity(
+                                        name = fileName.substringBeforeLast("."),
+                                        imagePath = imagePath,
+                                        faceEmbedding = face.embedding,
+                                        age = ""
+                                    )
+                                    repository.insertFace(faceEntity)
+                                }
                             }
+                        } else {
+                            println("Изображение $imagePath уже существует в базе данных")
                         }
                     }
                 } catch (e: Exception) {

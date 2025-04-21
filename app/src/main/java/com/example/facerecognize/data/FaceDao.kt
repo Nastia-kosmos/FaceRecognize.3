@@ -16,4 +16,10 @@ interface FaceDao {
 
     @Query("SELECT * FROM faces")
     suspend fun getAllFacesForComparison(): List<FaceEntity>
+    
+    @Query("SELECT COUNT(*) FROM faces WHERE imagePath = :imagePath")
+    suspend fun faceExistsByPath(imagePath: String): Int
+    
+    @Query("DELETE FROM faces")
+    suspend fun deleteAllFaces()
 } 
