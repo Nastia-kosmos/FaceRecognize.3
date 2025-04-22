@@ -65,6 +65,8 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     implementation(libs.firebase.analytics)
     implementation(libs.firebase.storage)
+    // Поддержка корутин для Firebase
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
     kapt("androidx.room:room-compiler:2.6.1")
     
     // Gson для сериализации
