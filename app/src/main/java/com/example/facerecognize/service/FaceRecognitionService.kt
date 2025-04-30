@@ -1,156 +1,136 @@
 package com.example.facerecognize.service
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.PointF
+import android.graphics.Color
+import android.util.Log
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.*
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetector
+import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class FaceRecognitionService {
-    private val faceDetector: FaceDetector = FaceDetection.getClient(
-        FaceDetectorOptions.Builder()
+class FaceRecognitionService(private val context: Context) {
+    private val faceDetector: FaceDetector by lazy {
+        val options = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-            .setMinFaceSize(0.15f)
-            .enableTracking()
             .build()
-    )
+        
+        FaceDetection.getClient(options)
+    }
 
-    suspend fun detectFaces(bitmap: Bitmap): List<FaceEmbedding> = withContext(Dispatchers.IO) {
+    suspend fun detectFaces(bitmap: Bitmap): List<Face> {
+        Log.d("FaceRecognition", "=== Начало процесса распознавания лиц ===")
+        Log.d("FaceRecognition", "Размер входного изображения: ${bitmap.width}x${bitmap.height}")
+        
         val inputImage = InputImage.fromBitmap(bitmap, 0)
-        val faces = suspendCancellableCoroutine { continuation ->
-            faceDetector.process(inputImage)
-                .addOnSuccessListener { faces ->
-                    continuation.resume(faces)
-                }
-                .addOnFailureListener { exception ->
-                    continuation.resumeWithException(exception)
-                }
-        }
+        val faces = faceDetector.process(inputImage).await()
+        Log.d("FaceRecognition", "Обнаружено лиц: ${faces.size}")
         
-        faces.map { face ->
-            val faceBitmap = extractFaceBitmap(bitmap, face.boundingBox)
-            val landmarks = extractFacialLandmarks(face)
-            val attributes = extractFaceAttributes(face)
+        val detectedFaces = mutableListOf<Face>()
+        
+        faces.forEachIndexed { index, face ->
+            Log.d("FaceRecognition", """
+                Обработка лица #${index + 1}:
+                - Уверенность определения: ${face.trackingId}
+                - Угол поворота: ${face.headEulerAngleY}
+            """.trimIndent())
             
-            FaceEmbedding(
-                faceBitmap = faceBitmap,
-                embedding = generateEmbedding(landmarks, attributes),
-                confidence = face.trackingId?.toFloat() ?: 0f,
-                boundingBox = face.boundingBox,
-                landmarks = landmarks,
-                attributes = attributes
-            )
-        }
-    }
-
-    private fun extractFaceBitmap(originalBitmap: Bitmap, boundingBox: Rect): Bitmap {
-        // Добавляем отступ вокруг лица для лучшего распознавания
-        val padding = (boundingBox.width() * 0.2f).toInt()
-        
-        val left = (boundingBox.left - padding).coerceAtLeast(0)
-        val top = (boundingBox.top - padding).coerceAtLeast(0)
-        val width = (boundingBox.width() + 2 * padding)
-            .coerceAtMost(originalBitmap.width - left)
-        val height = (boundingBox.height() + 2 * padding)
-            .coerceAtMost(originalBitmap.height - top)
-
-        return Bitmap.createBitmap(
-            originalBitmap,
-            left, top, width, height
-        )
-    }
-
-    private fun extractFacialLandmarks(face: Face): Map<Int, PointF> {
-        return mapOf(
-            FaceLandmark.NOSE_BASE to face.getLandmark(FaceLandmark.NOSE_BASE)?.position,
-            FaceLandmark.LEFT_EYE to face.getLandmark(FaceLandmark.LEFT_EYE)?.position,
-            FaceLandmark.RIGHT_EYE to face.getLandmark(FaceLandmark.RIGHT_EYE)?.position,
-            FaceLandmark.MOUTH_LEFT to face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position,
-            FaceLandmark.MOUTH_RIGHT to face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position,
-            FaceLandmark.MOUTH_BOTTOM to face.getLandmark(FaceLandmark.MOUTH_BOTTOM)?.position
-        ).filterValues { it != null }.mapValues { it.value!! }
-    }
-
-    private fun extractFaceAttributes(face: Face): FaceAttributes {
-        return FaceAttributes(
-            smilingProbability = face.smilingProbability ?: 0f,
-            leftEyeOpenProbability = face.leftEyeOpenProbability ?: 0f,
-            rightEyeOpenProbability = face.rightEyeOpenProbability ?: 0f,
-            headEulerAngleX = face.headEulerAngleX,
-            headEulerAngleY = face.headEulerAngleY,
-            headEulerAngleZ = face.headEulerAngleZ
-        )
-    }
-
-    private fun generateEmbedding(
-        landmarks: Map<Int, PointF>,
-        attributes: FaceAttributes
-    ): FloatArray {
-        val embedding = ArrayList<Float>()
-        
-        // 1. Нормализуем координаты относительно центра лица
-        val centerX = landmarks.values.map { it.x }.average().toFloat()
-        val centerY = landmarks.values.map { it.y }.average().toFloat()
-        
-        // Добавляем нормализованные координаты ключевых точек
-        landmarks.values.forEach { point ->
-            // Нормализуем координаты относительно центра
-            embedding.add((point.x - centerX) / 100f)
-            embedding.add((point.y - centerY) / 100f)
-        }
-        
-        // 2. Добавляем расстояния между ключевыми точками
-        val landmarksList = landmarks.values.toList()
-        for (i in landmarksList.indices) {
-            for (j in i + 1 until landmarksList.size) {
-                val distance = calculateDistance(landmarksList[i], landmarksList[j])
-                embedding.add(distance / 100f) // Нормализуем расстояния
+            try {
+                val embedding = calculateFaceEmbedding(bitmap, face.boundingBox)
+                Log.d("FaceRecognition", "Успешно рассчитан вектор признаков размером: ${embedding.size}")
+                detectedFaces.add(Face(embedding))
+            } catch (e: Exception) {
+                Log.e("FaceRecognition", "Ошибка при расчете вектора признаков для лица #${index + 1}", e)
             }
         }
         
-        // 3. Добавляем углы между ключевыми точками
-        for (i in 0 until landmarksList.size - 2) {
-            val angle = calculateAngle(
-                landmarksList[i],
-                landmarksList[i + 1],
-                landmarksList[i + 2]
+        Log.d("FaceRecognition", "=== Завершение процесса распознавания лиц ===")
+        Log.d("FaceRecognition", "Успешно обработано лиц: ${detectedFaces.size}")
+        return detectedFaces
+    }
+
+    private fun calculateFaceEmbedding(bitmap: Bitmap, boundingBox: Rect): FloatArray {
+        Log.d("FaceRecognition", "Начало расчета вектора признаков")
+        
+        try {
+            // Обрезаем изображение по области лица
+            val faceBitmap = Bitmap.createBitmap(
+                bitmap,
+                boundingBox.left.coerceAtLeast(0),
+                boundingBox.top.coerceAtLeast(0),
+                boundingBox.width().coerceAtMost(bitmap.width - boundingBox.left),
+                boundingBox.height().coerceAtMost(bitmap.height - boundingBox.top)
             )
-            embedding.add(angle / 180f) // Нормализуем углы
+            Log.d("FaceRecognition", "Создано обрезанное изображение лица: ${faceBitmap.width}x${faceBitmap.height}")
+            
+            // Масштабируем до нужного размера
+            val scaledBitmap = Bitmap.createScaledBitmap(faceBitmap, 96, 96, true)
+            Log.d("FaceRecognition", "Изображение масштабировано до 96x96")
+            
+            // Конвертируем в массив float
+            val embedding = convertBitmapToEmbedding(scaledBitmap)
+            Log.d("FaceRecognition", "Вектор признаков успешно рассчитан")
+            
+            return embedding
+            
+        } catch (e: Exception) {
+            Log.e("FaceRecognition", "Ошибка при расчете вектора признаков", e)
+            throw e
         }
-        
-        // 4. Добавляем нормализованные атрибуты лица
-        with(attributes) {
-            embedding.add(smilingProbability)
-            embedding.add(leftEyeOpenProbability)
-            embedding.add(rightEyeOpenProbability)
-            embedding.add(headEulerAngleX / 180f)
-            embedding.add(headEulerAngleY / 180f)
-            embedding.add(headEulerAngleZ / 180f)
-        }
-        
-        return embedding.toFloatArray()
     }
 
-    private fun calculateDistance(p1: PointF, p2: PointF): Float {
-        val dx = p2.x - p1.x
-        val dy = p2.y - p1.y
-        return kotlin.math.sqrt(dx * dx + dy * dy)
+    private fun convertBitmapToEmbedding(bitmap: Bitmap): FloatArray {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        
+        val embedding = FloatArray(width * height * 3)  // RGB channels
+        var idx = 0
+        
+        for (pixel in pixels) {
+            embedding[idx++] = Color.red(pixel) / 255f
+            embedding[idx++] = Color.green(pixel) / 255f
+            embedding[idx++] = Color.blue(pixel) / 255f
+        }
+        
+        return embedding
     }
 
-    private fun calculateAngle(p1: PointF, p2: PointF, p3: PointF): Float {
-        val angle1 = kotlin.math.atan2(p2.y - p1.y, p2.x - p1.x)
-        val angle2 = kotlin.math.atan2(p3.y - p2.y, p3.x - p2.x)
-        var angle = Math.toDegrees((angle2 - angle1).toDouble()).toFloat()
-        if (angle < 0) angle += 360f
-        return angle
+    private suspend fun <T> com.google.android.gms.tasks.Task<T>.await(): T {
+        return suspendCancellableCoroutine { continuation ->
+            addOnSuccessListener { result ->
+                continuation.resume(result)
+            }
+            addOnFailureListener { exception ->
+                continuation.resumeWithException(exception)
+            }
+        }
+    }
+}
+
+data class Face(
+    val embedding: FloatArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as Face
+        return embedding.contentEquals(other.embedding)
+    }
+
+    override fun hashCode(): Int {
+        return embedding.contentHashCode()
     }
 }
 

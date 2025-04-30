@@ -24,6 +24,9 @@ interface FaceDao {
     @Query("SELECT * FROM faces")
     suspend fun getAllFacesForComparison(): List<FaceEntity>
     
+    @Query("SELECT * FROM faces WHERE imageHash = :imageHash LIMIT 1")
+    suspend fun getFaceByHash(imageHash: String): FaceEntity?
+    
     @Query("SELECT COUNT(*) FROM faces WHERE imagePath = :imagePath")
     suspend fun faceExistsByPath(imagePath: String): Int
     
@@ -32,6 +35,9 @@ interface FaceDao {
     
     @Query("DELETE FROM faces")
     suspend fun deleteAllFaces()
+
+    @Delete
+    suspend fun deleteFace(face: FaceEntity)
 }
 
 // Функция для загрузки изображений в Firebase Storage

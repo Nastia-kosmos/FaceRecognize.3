@@ -39,6 +39,8 @@ import com.example.facerecognize.service.ImageLibraryLoader
 import com.example.facerecognize.service.AWSRekognitionService
 import com.example.facerecognize.ui.theme.FaceRecognizeTheme
 import com.example.facerecognize.utils.AWSCredentialsManager
+import com.example.facerecognize.utils.ImageHashUtils
+import com.example.facerecognize.models.*
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageReference
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -100,27 +102,12 @@ suspend fun uploadImageToFirebase(context: Context, uri: Uri, fileName: String):
 }
 
 class MainActivity : ComponentActivity() {
-    private val faceRecognitionService = FaceRecognitionService()
-    private val database by lazy { FaceDatabase.getDatabase(this) }
-    private val repository by lazy { FaceRepository(database.faceDao()) }
-    private val imageLibraryLoader by lazy { 
-        ImageLibraryLoader(this, faceRecognitionService, repository)
-    }
-    private val awsRekognitionService by lazy {
-        AWSRekognitionService(
-            accessKeyId = AWSCredentialsManager.getAccessKey(),
-            secretAccessKey = AWSCredentialsManager.getSecretKey(),
-            region = AWSCredentialsManager.getRegion()
-        )
-    }
-    
-    val viewModel: FaceRecognitionViewModel by viewModels {
-        object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return FaceRecognitionViewModel(repository, faceRecognitionService, imageLibraryLoader, awsRekognitionService) as T
-            }
-        }
-    }
+    private lateinit var faceRecognitionService: FaceRecognitionService
+    private lateinit var database: FaceDatabase
+    private lateinit var repository: FaceRepository
+    private lateinit var imageLibraryLoader: ImageLibraryLoader
+    private lateinit var awsRekognitionService: AWSRekognitionService
+    private lateinit var viewModel: FaceRecognitionViewModel
 
     private val getContent = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.onImageSelected(it, this) }
@@ -139,6 +126,33 @@ class MainActivity : ComponentActivity() {
         
         // Инициализация AWS credentials
         AWSCredentialsManager.initialize(this)
+        
+        // Инициализация сервисов
+        faceRecognitionService = FaceRecognitionService(this)
+        database = FaceDatabase.getDatabase(this)
+        repository = FaceRepository(database.faceDao())
+        imageLibraryLoader = ImageLibraryLoader(
+            context = this,
+            faceRecognitionService = faceRecognitionService,
+            repository = repository
+        )
+        awsRekognitionService = AWSRekognitionService(
+            accessKeyId = AWSCredentialsManager.getAccessKey(),
+            secretAccessKey = AWSCredentialsManager.getSecretKey(),
+            region = AWSCredentialsManager.getRegion()
+        )
+        
+        // Инициализация ViewModel
+        viewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                return FaceRecognitionViewModel(
+                    repository = repository,
+                    faceRecognitionService = faceRecognitionService,
+                    imageLibraryLoader = imageLibraryLoader,
+                    awsRekognitionService = awsRekognitionService
+                ) as T
+            }
+        })[FaceRecognitionViewModel::class.java]
         
         // Проверяем соединение с AWS
         viewModel.createCollection()
@@ -160,6 +174,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startImageLibraryLoading() {
+        viewModel.loadImageLibrary("archive")
+    }
+
     private fun checkAndRequestPermissions() {
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
@@ -179,11 +197,6 @@ class MainActivity : ComponentActivity() {
         } else {
             requestPermissions.launch(permissions)
         }
-    }
-
-    private fun startImageLibraryLoading() {
-        // Загружаем библиотеку из assets
-        viewModel.loadImageLibrary("archive")
     }
 }
 
@@ -633,25 +646,25 @@ class FaceRecognitionViewModel(
                 }
                 
                 // Используем AWS Rekognition для определения лиц и знаменитостей
-                val awsFaces = awsRekognitionService.detectFaces(bitmap)
-                val celebrities = awsRekognitionService.recognizeCelebrities(bitmap)
+                val awsFaces = awsRekognitionService.detectFaces(bitmap).map { it.toAWSFaceDetail() }
+                val celebrities = awsRekognitionService.recognizeCelebrities(bitmap).map { it.toAWSCelebrity() }
                 
                 if (awsFaces.isNotEmpty()) {
                     // Получаем первое найденное лицо
                     val awsFace = awsFaces[0]
                     
                     // Анализируем результаты AWS
-                    val confidenceMessage = "Уверенность определения: ${awsFace.confidence}%"
-                    val ageMessage = "Возраст: ${awsFace.ageRange.low}-${awsFace.ageRange.high} лет"
-                    val emotionMessage = awsFace.emotions.maxByOrNull { it.confidence }?.let {
-                        "Эмоция: ${it.type} (${it.confidence}%)"
+                    val confidenceMessage = "Уверенность определения: ${awsFace.confidence?.toInt() ?: 0}%"
+                    val ageMessage = "Возраст: ${awsFace.ageRange?.low ?: 0}-${awsFace.ageRange?.high ?: 0} лет"
+                    val emotionMessage = awsFace.emotions?.maxByOrNull { it.confidence ?: 0f }?.let {
+                        "Эмоция: ${it.type ?: "Неизвестно"} (${it.confidence?.toInt() ?: 0}%)"
                     } ?: "Эмоции не определены"
                     
                     val celebrityInfo = if (celebrities.isNotEmpty()) {
                         val celebrity = celebrities[0]
                         "\n\nРаспознана знаменитость: ${celebrity.name}" +
-                        "\nУверенность: ${String.format("%.2f", celebrity.matchConfidence)}%" +
-                        "\nИМДб: ${celebrity.urls.firstOrNull() ?: "Нет данных"}"
+                        "\nУверенность: ${String.format("%.2f", celebrity.matchConfidence ?: 0f)}%" +
+                        "\nИМДб: ${celebrity.urls?.firstOrNull() ?: "Нет данных"}"
                     } else {
                         "\n\nЗнаменитости не обнаружены"
                     }
@@ -674,9 +687,10 @@ class FaceRecognitionViewModel(
                         val face = faces.first()
                         val faceEntity = FaceEntity(
                             name = name,
-                            imagePath = imagePath,  // Используем путь к сохраненному файлу (Firebase URL или локальный)
+                            imagePath = imagePath,
                             faceEmbedding = face.embedding,
-                            age = age
+                            age = age,
+                            imageHash = ImageHashUtils.calculateImageHash(bitmap)
                         )
                         
                         // Проверяем, не дубликат ли это
