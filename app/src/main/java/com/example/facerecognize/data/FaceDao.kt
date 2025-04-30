@@ -27,6 +27,9 @@ interface FaceDao {
     @Query("SELECT COUNT(*) FROM faces WHERE imagePath = :imagePath")
     suspend fun faceExistsByPath(imagePath: String): Int
     
+    @Query("SELECT COUNT(*) FROM faces WHERE name = :name")
+    suspend fun countFacesByName(name: String): Int
+    
     @Query("DELETE FROM faces")
     suspend fun deleteAllFaces()
 }

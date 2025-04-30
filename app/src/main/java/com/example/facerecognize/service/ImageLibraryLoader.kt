@@ -44,7 +44,14 @@ class ImageLibraryLoader(
                                         faceEmbedding = face.embedding,
                                         age = ""
                                     )
-                                    repository.insertFace(faceEntity)
+                                    
+                                    // Проверка на дубликаты не только по пути, но и по вектору признаков
+                                    if (!repository.isDuplicate(faceEntity)) {
+                                        repository.insertFace(faceEntity)
+                                        println("Добавлено новое лицо: ${faceEntity.name}")
+                                    } else {
+                                        println("Обнаружен дубликат, лицо не добавлено: ${faceEntity.name}")
+                                    }
                                 }
                             }
                         } else {

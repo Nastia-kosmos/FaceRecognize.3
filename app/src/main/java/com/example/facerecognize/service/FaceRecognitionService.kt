@@ -94,24 +94,63 @@ class FaceRecognitionService {
         landmarks: Map<Int, PointF>,
         attributes: FaceAttributes
     ): FloatArray {
-        // Создаем вектор признаков на основе ключевых точек и атрибутов лица
         val embedding = ArrayList<Float>()
-
+        
+        // 1. Нормализуем координаты относительно центра лица
+        val centerX = landmarks.values.map { it.x }.average().toFloat()
+        val centerY = landmarks.values.map { it.y }.average().toFloat()
+        
         // Добавляем нормализованные координаты ключевых точек
         landmarks.values.forEach { point ->
-            embedding.add(point.x)
-            embedding.add(point.y)
+            // Нормализуем координаты относительно центра
+            embedding.add((point.x - centerX) / 100f)
+            embedding.add((point.y - centerY) / 100f)
         }
-
-        // Добавляем атрибуты лица
-        embedding.add(attributes.smilingProbability)
-        embedding.add(attributes.leftEyeOpenProbability)
-        embedding.add(attributes.rightEyeOpenProbability)
-        embedding.add(attributes.headEulerAngleX)
-        embedding.add(attributes.headEulerAngleY)
-        embedding.add(attributes.headEulerAngleZ)
-
+        
+        // 2. Добавляем расстояния между ключевыми точками
+        val landmarksList = landmarks.values.toList()
+        for (i in landmarksList.indices) {
+            for (j in i + 1 until landmarksList.size) {
+                val distance = calculateDistance(landmarksList[i], landmarksList[j])
+                embedding.add(distance / 100f) // Нормализуем расстояния
+            }
+        }
+        
+        // 3. Добавляем углы между ключевыми точками
+        for (i in 0 until landmarksList.size - 2) {
+            val angle = calculateAngle(
+                landmarksList[i],
+                landmarksList[i + 1],
+                landmarksList[i + 2]
+            )
+            embedding.add(angle / 180f) // Нормализуем углы
+        }
+        
+        // 4. Добавляем нормализованные атрибуты лица
+        with(attributes) {
+            embedding.add(smilingProbability)
+            embedding.add(leftEyeOpenProbability)
+            embedding.add(rightEyeOpenProbability)
+            embedding.add(headEulerAngleX / 180f)
+            embedding.add(headEulerAngleY / 180f)
+            embedding.add(headEulerAngleZ / 180f)
+        }
+        
         return embedding.toFloatArray()
+    }
+
+    private fun calculateDistance(p1: PointF, p2: PointF): Float {
+        val dx = p2.x - p1.x
+        val dy = p2.y - p1.y
+        return kotlin.math.sqrt(dx * dx + dy * dy)
+    }
+
+    private fun calculateAngle(p1: PointF, p2: PointF, p3: PointF): Float {
+        val angle1 = kotlin.math.atan2(p2.y - p1.y, p2.x - p1.x)
+        val angle2 = kotlin.math.atan2(p3.y - p2.y, p3.x - p2.x)
+        var angle = Math.toDegrees((angle2 - angle1).toDouble()).toFloat()
+        if (angle < 0) angle += 360f
+        return angle
     }
 }
 

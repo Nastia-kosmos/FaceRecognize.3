@@ -311,6 +311,27 @@ fun FaceRecognitionScreen(
                     Text("Обновить библиотеку")
                 }
             }
+
+            // Добавляем кнопку для удаления дубликатов
+            Button(
+                onClick = { viewModel.removeDuplicates() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !uiState.isLoadingLibrary && !uiState.isProcessing,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.tertiary
+                )
+            ) {
+                Text("Удалить дубликаты")
+            }
+        }
+
+        // Отображаем сообщение, если оно есть
+        uiState.message?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 8.dp)
+            )
         }
 
         // Показываем форму для ввода информации, если нужно
@@ -658,16 +679,27 @@ class FaceRecognitionViewModel(
                             age = age
                         )
                         
-                        // Сохраняем в базу данных
-                        repository.insertFace(faceEntity)
+                        // Проверяем, не дубликат ли это
+                        val isDuplicate = repository.isDuplicate(faceEntity, 0.98)
                         
-                        val similarFacesWithScores = repository.findSimilarFacesWithScores(faceEntity)
-                        
-                        _uiState.value = _uiState.value.copy(
-                            similarFaces = similarFacesWithScores,
-                            isProcessing = false,
-                            awsAnalysisResult = awsInfo
-                        )
+                        if (!isDuplicate) {
+                            // Сохраняем в базу данных
+                            repository.insertFace(faceEntity)
+                            
+                            val similarFacesWithScores = repository.findSimilarFacesWithScores(faceEntity)
+                            
+                            _uiState.value = _uiState.value.copy(
+                                similarFaces = similarFacesWithScores,
+                                isProcessing = false,
+                                awsAnalysisResult = awsInfo
+                            )
+                        } else {
+                            _uiState.value = _uiState.value.copy(
+                                isProcessing = false,
+                                awsAnalysisResult = awsInfo,
+                                error = "Это лицо уже существует в базе данных"
+                            )
+                        }
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isProcessing = false,
@@ -711,6 +743,32 @@ class FaceRecognitionViewModel(
         }
     }
 
+    /**
+     * Удаляет дубликаты из базы данных
+     */
+    fun removeDuplicates() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isProcessing = true,
+                error = null
+            )
+            
+            try {
+                val removedCount = repository.removeDuplicates()
+                
+                _uiState.value = _uiState.value.copy(
+                    isProcessing = false,
+                    message = "Удалено $removedCount дубликатов"
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isProcessing = false,
+                    error = "Ошибка при удалении дубликатов: ${e.message}"
+                )
+            }
+        }
+    }
+
     fun setTempPersonName(name: String) {
         _uiState.value = _uiState.value.copy(
             tempPersonName = name
@@ -740,5 +798,6 @@ data class FaceRecognitionUiState(
     val awsAnalysisResult: String? = null,
     val showInfoForm: Boolean = false,
     val tempPersonName: String = "",
-    val tempPersonAge: String = ""
+    val tempPersonAge: String = "",
+    val message: String? = null
 )
